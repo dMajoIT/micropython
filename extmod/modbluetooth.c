@@ -52,6 +52,9 @@
 #error pairing and bonding require synchronous modbluetooth events
 #endif
 
+// NimBLE can have fragmented data for GATTC events, so requires reassembly.
+#define MICROPY_PY_BLUETOOTH_USE_GATTC_EVENT_DATA_REASSEMBLY MICROPY_BLUETOOTH_NIMBLE
+
 #define MP_BLUETOOTH_CONNECT_DEFAULT_SCAN_DURATION_MS 2000
 
 #define MICROPY_PY_BLUETOOTH_MAX_EVENT_DATA_TUPLE_LEN 5
@@ -730,7 +733,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gap_passkey_obj, 4, 4, 
 STATIC mp_obj_t bluetooth_ble_gatts_read(mp_obj_t self_in, mp_obj_t value_handle_in) {
     (void)self_in;
     size_t len = 0;
-    uint8_t *buf;
+    const uint8_t *buf;
     mp_bluetooth_gatts_read(mp_obj_get_int(value_handle_in), &buf, &len);
     return mp_obj_new_bytes(buf, len);
 }
@@ -748,32 +751,30 @@ STATIC mp_obj_t bluetooth_ble_gatts_write(size_t n_args, const mp_obj_t *args) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gatts_write_obj, 3, 4, bluetooth_ble_gatts_write);
 
-STATIC mp_obj_t bluetooth_ble_gatts_notify(size_t n_args, const mp_obj_t *args) {
+STATIC mp_obj_t bluetooth_ble_gatts_notify_indicate(size_t n_args, const mp_obj_t *args, int gatts_op) {
     mp_int_t conn_handle = mp_obj_get_int(args[1]);
     mp_int_t value_handle = mp_obj_get_int(args[2]);
 
+    const uint8_t *value = NULL;
+    size_t value_len = 0;
     if (n_args == 4 && args[3] != mp_const_none) {
         mp_buffer_info_t bufinfo = {0};
         mp_get_buffer_raise(args[3], &bufinfo, MP_BUFFER_READ);
-        int err = mp_bluetooth_gatts_notify_send(conn_handle, value_handle, bufinfo.buf, bufinfo.len);
-        bluetooth_handle_errno(err);
-        return mp_const_none;
-    } else {
-        int err = mp_bluetooth_gatts_notify(conn_handle, value_handle);
-        return bluetooth_handle_errno(err);
+        value = bufinfo.buf;
+        value_len = bufinfo.len;
     }
+    return bluetooth_handle_errno(mp_bluetooth_gatts_notify_indicate(conn_handle, value_handle, gatts_op, value, value_len));
+}
+
+STATIC mp_obj_t bluetooth_ble_gatts_notify(size_t n_args, const mp_obj_t *args) {
+    return bluetooth_ble_gatts_notify_indicate(n_args, args, MP_BLUETOOTH_GATTS_OP_NOTIFY);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gatts_notify_obj, 3, 4, bluetooth_ble_gatts_notify);
 
-STATIC mp_obj_t bluetooth_ble_gatts_indicate(mp_obj_t self_in, mp_obj_t conn_handle_in, mp_obj_t value_handle_in) {
-    (void)self_in;
-    mp_int_t conn_handle = mp_obj_get_int(conn_handle_in);
-    mp_int_t value_handle = mp_obj_get_int(value_handle_in);
-
-    int err = mp_bluetooth_gatts_indicate(conn_handle, value_handle);
-    return bluetooth_handle_errno(err);
+STATIC mp_obj_t bluetooth_ble_gatts_indicate(size_t n_args, const mp_obj_t *args) {
+    return bluetooth_ble_gatts_notify_indicate(n_args, args, MP_BLUETOOTH_GATTS_OP_INDICATE);
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_3(bluetooth_ble_gatts_indicate_obj, bluetooth_ble_gatts_indicate);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gatts_indicate_obj, 3, 4, bluetooth_ble_gatts_indicate);
 
 STATIC mp_obj_t bluetooth_ble_gatts_set_buffer(size_t n_args, const mp_obj_t *args) {
     mp_int_t value_handle = mp_obj_get_int(args[1]);
@@ -840,12 +841,11 @@ STATIC mp_obj_t bluetooth_ble_gattc_write(size_t n_args, const mp_obj_t *args) {
     mp_obj_t data = args[3];
     mp_buffer_info_t bufinfo = {0};
     mp_get_buffer_raise(data, &bufinfo, MP_BUFFER_READ);
-    size_t len = bufinfo.len;
     unsigned int mode = MP_BLUETOOTH_WRITE_MODE_NO_RESPONSE;
     if (n_args == 5) {
         mode = mp_obj_get_int(args[4]);
     }
-    return bluetooth_handle_errno(mp_bluetooth_gattc_write(conn_handle, value_handle, bufinfo.buf, &len, mode));
+    return bluetooth_handle_errno(mp_bluetooth_gattc_write(conn_handle, value_handle, bufinfo.buf, bufinfo.len, mode));
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gattc_write_obj, 4, 5, bluetooth_ble_gattc_write);
 
@@ -985,7 +985,7 @@ STATIC MP_DEFINE_CONST_OBJ_TYPE(
     );
 
 STATIC const mp_rom_map_elem_t mp_module_bluetooth_globals_table[] = {
-    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_ubluetooth) },
+    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_bluetooth) },
     { MP_ROM_QSTR(MP_QSTR_BLE), MP_ROM_PTR(&mp_type_bluetooth_ble) },
     { MP_ROM_QSTR(MP_QSTR_UUID), MP_ROM_PTR(&mp_type_bluetooth_uuid) },
 
@@ -999,12 +999,16 @@ STATIC const mp_rom_map_elem_t mp_module_bluetooth_globals_table[] = {
 
 STATIC MP_DEFINE_CONST_DICT(mp_module_bluetooth_globals, mp_module_bluetooth_globals_table);
 
-const mp_obj_module_t mp_module_ubluetooth = {
+const mp_obj_module_t mp_module_bluetooth = {
     .base = { &mp_type_module },
     .globals = (mp_obj_dict_t *)&mp_module_bluetooth_globals,
 };
 
-MP_REGISTER_MODULE(MP_QSTR_ubluetooth, mp_module_ubluetooth);
+// This module should not be extensible (as it is not a CPython standard
+// library nor is it necessary to override from the filesystem), however it
+// has previously been known as `ubluetooth`, so by making it extensible the
+// `ubluetooth` alias will continue to work.
+MP_REGISTER_EXTENSIBLE_MODULE(MP_QSTR_bluetooth, mp_module_bluetooth);
 
 // Helpers
 
@@ -1139,11 +1143,7 @@ STATIC mp_obj_t invoke_irq_handler_run(uint16_t event,
     const mp_int_t *numeric, size_t n_unsigned, size_t n_signed,
     const uint8_t *addr,
     const mp_obj_bluetooth_uuid_t *uuid,
-    const uint8_t **data, size_t *data_len, size_t n_data) {
-    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
-    if (o->irq_handler == mp_const_none) {
-        return mp_const_none;
-    }
+    const uint8_t **data, uint16_t *data_len, size_t n_data) {
 
     mp_obj_array_t mv_addr;
     mp_obj_array_t mv_data[2];
@@ -1168,6 +1168,34 @@ STATIC mp_obj_t invoke_irq_handler_run(uint16_t event,
         data_tuple->items[data_tuple->len++] = MP_OBJ_FROM_PTR(uuid);
     }
     #endif
+
+    #if MICROPY_PY_BLUETOOTH_USE_GATTC_EVENT_DATA_REASSEMBLY
+    void *buf_to_free = NULL;
+    uint16_t buf_to_free_len = 0;
+    if (event == MP_BLUETOOTH_IRQ_GATTC_NOTIFY || event == MP_BLUETOOTH_IRQ_GATTC_INDICATE || event == MP_BLUETOOTH_IRQ_GATTC_READ_RESULT) {
+        if (n_data > 1) {
+            // Fragmented buffer, need to combine into a new heap-allocated buffer
+            // in order to pass to Python.
+            // Only gattc_on_data_available calls this code, so data and data_len are writable.
+            uint16_t total_len = 0;
+            for (size_t i = 0; i < n_data; ++i) {
+                total_len += data_len[i];
+            }
+            uint8_t *buf = m_new(uint8_t, total_len);
+            uint8_t *p = buf;
+            for (size_t i = 0; i < n_data; ++i) {
+                memcpy(p, data[i], data_len[i]);
+                p += data_len[i];
+            }
+            data[0] = buf;
+            data_len[0] = total_len;
+            n_data = 1;
+            buf_to_free = buf;
+            buf_to_free_len = total_len;
+        }
+    }
+    #endif
+
     for (size_t i = 0; i < n_data; ++i) {
         if (data[i]) {
             mp_obj_memoryview_init(&mv_data[i], 'B', 0, data_len[i], (void *)data[i]);
@@ -1176,11 +1204,47 @@ STATIC mp_obj_t invoke_irq_handler_run(uint16_t event,
             data_tuple->items[data_tuple->len++] = mp_const_none;
         }
     }
+
     assert(data_tuple->len <= MICROPY_PY_BLUETOOTH_MAX_EVENT_DATA_TUPLE_LEN);
 
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
     mp_obj_t result = mp_call_function_2(o->irq_handler, MP_OBJ_NEW_SMALL_INT(event), MP_OBJ_FROM_PTR(data_tuple));
 
+    #if MICROPY_PY_BLUETOOTH_USE_GATTC_EVENT_DATA_REASSEMBLY
+    if (buf_to_free != NULL) {
+        m_del(uint8_t, (uint8_t *)buf_to_free, buf_to_free_len);
+    }
+    #endif
+
     mp_local_free(data_tuple);
+
+    return result;
+}
+
+STATIC mp_obj_t invoke_irq_handler_run_protected(uint16_t event,
+    const mp_int_t *numeric, size_t n_unsigned, size_t n_signed,
+    const uint8_t *addr,
+    const mp_obj_bluetooth_uuid_t *uuid,
+    const uint8_t **data, uint16_t *data_len, size_t n_data) {
+
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+    if (o->irq_handler == mp_const_none) {
+        return mp_const_none;
+    }
+
+    mp_obj_t result = mp_const_none;
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        result = invoke_irq_handler_run(event, numeric, n_unsigned, n_signed, addr, uuid, data, data_len, n_data);
+        nlr_pop();
+    } else {
+        // Uncaught exception, print it out.
+        mp_printf(MICROPY_ERROR_PRINTER, "Unhandled exception in IRQ callback handler\n");
+        mp_obj_print_exception(MICROPY_ERROR_PRINTER, MP_OBJ_FROM_PTR(nlr.ret_val));
+
+        // Disable the BLE IRQ handler.
+        o->irq_handler = mp_const_none;
+    }
 
     return result;
 }
@@ -1199,7 +1263,7 @@ STATIC mp_obj_t invoke_irq_handler(uint16_t event,
     const mp_int_t *numeric, size_t n_unsigned, size_t n_signed,
     const uint8_t *addr,
     const mp_obj_bluetooth_uuid_t *uuid,
-    const uint8_t **data, size_t *data_len, size_t n_data) {
+    const uint8_t **data, uint16_t *data_len, size_t n_data) {
 
     // This code may run on an existing MicroPython thread, or a non-MicroPython thread
     // that's not using the mp_thread_get_state() value.  In the former case the state
@@ -1218,19 +1282,9 @@ STATIC mp_obj_t invoke_irq_handler(uint16_t event,
         MP_THREAD_GIL_ENTER();
     }
 
-    mp_obj_t result = mp_const_none;
-    nlr_buf_t nlr;
-    if (nlr_push(&nlr) == 0) {
-        mp_sched_lock();
-        result = invoke_irq_handler_run(event, numeric, n_unsigned, n_signed, addr, uuid, data, data_len, n_data);
-        mp_sched_unlock();
-        nlr_pop();
-    } else {
-        // Uncaught exception, print it out.
-        mp_sched_unlock();
-        mp_printf(MICROPY_ERROR_PRINTER, "Unhandled exception in IRQ callback handler\n");
-        mp_obj_print_exception(MICROPY_ERROR_PRINTER, MP_OBJ_FROM_PTR(nlr.ret_val));
-    }
+    mp_sched_lock();
+    mp_obj_t result = invoke_irq_handler_run_protected(event, numeric, n_unsigned, n_signed, addr, uuid, data, data_len, n_data);
+    mp_sched_unlock();
 
     if (ts_orig == NULL) {
         MP_THREAD_GIL_EXIT();
@@ -1249,8 +1303,8 @@ STATIC mp_obj_t invoke_irq_handler(uint16_t event,
     const mp_int_t *numeric, size_t n_unsigned, size_t n_signed,
     const uint8_t *addr,
     const mp_obj_bluetooth_uuid_t *uuid,
-    const uint8_t **data, size_t *data_len, size_t n_data) {
-    return invoke_irq_handler_run(event, numeric, n_unsigned, n_signed, addr, uuid, data, data_len, n_data);
+    const uint8_t **data, uint16_t *data_len, size_t n_data) {
+    return invoke_irq_handler_run_protected(event, numeric, n_unsigned, n_signed, addr, uuid, data, data_len, n_data);
 }
 
 #endif
@@ -1277,7 +1331,7 @@ void mp_bluetooth_gatts_on_encryption_update(uint16_t conn_handle, bool encrypte
     invoke_irq_handler(MP_BLUETOOTH_IRQ_ENCRYPTION_UPDATE, args, 5, 0, NULL_ADDR, NULL_UUID, NULL_DATA, NULL_DATA_LEN, 0);
 }
 
-bool mp_bluetooth_gap_on_get_secret(uint8_t type, uint8_t index, const uint8_t *key, size_t key_len, const uint8_t **value, size_t *value_len) {
+bool mp_bluetooth_gap_on_get_secret(uint8_t type, uint8_t index, const uint8_t *key, uint16_t key_len, const uint8_t **value, size_t *value_len) {
     mp_int_t args[] = {type, index};
     mp_obj_t result = invoke_irq_handler(MP_BLUETOOTH_IRQ_GET_SECRET, args, 2, 0, NULL_ADDR, NULL_UUID, &key, &key_len, 1);
     if (result == mp_const_none) {
@@ -1293,7 +1347,7 @@ bool mp_bluetooth_gap_on_get_secret(uint8_t type, uint8_t index, const uint8_t *
 bool mp_bluetooth_gap_on_set_secret(uint8_t type, const uint8_t *key, size_t key_len, const uint8_t *value, size_t value_len) {
     mp_int_t args[] = { type };
     const uint8_t *data[] = {key, value};
-    size_t data_len[] = {key_len, value_len};
+    uint16_t data_len[] = {key_len, value_len};
     mp_obj_t result = invoke_irq_handler(MP_BLUETOOTH_IRQ_SET_SECRET, args, 1, 0, NULL_ADDR, NULL_UUID, data, data_len, 2);
     return mp_obj_is_true(result);
 }
@@ -1364,7 +1418,7 @@ void mp_bluetooth_gap_on_scan_complete(void) {
     invoke_irq_handler(MP_BLUETOOTH_IRQ_SCAN_DONE, NULL_NUMERIC, 0, 0, NULL_ADDR, NULL_UUID, NULL_DATA, NULL_DATA_LEN, 0);
 }
 
-void mp_bluetooth_gap_on_scan_result(uint8_t addr_type, const uint8_t *addr, uint8_t adv_type, const int8_t rssi, const uint8_t *data, size_t data_len) {
+void mp_bluetooth_gap_on_scan_result(uint8_t addr_type, const uint8_t *addr, uint8_t adv_type, const int8_t rssi, const uint8_t *data, uint16_t data_len) {
     mp_int_t args[] = {addr_type, adv_type, rssi};
     invoke_irq_handler(MP_BLUETOOTH_IRQ_SCAN_RESULT, args, 1, 2, addr, NULL_UUID, &data, &data_len, 1);
 }
@@ -1393,35 +1447,8 @@ void mp_bluetooth_gattc_on_discover_complete(uint8_t event, uint16_t conn_handle
 }
 
 void mp_bluetooth_gattc_on_data_available(uint8_t event, uint16_t conn_handle, uint16_t value_handle, const uint8_t **data, uint16_t *data_len, size_t num) {
-    const uint8_t *combined_data;
-    size_t total_len;
-
-    if (num > 1) {
-        // Fragmented buffer, need to combine into a new heap-allocated buffer
-        // in order to pass to Python.
-        total_len = 0;
-        for (size_t i = 0; i < num; ++i) {
-            total_len += data_len[i];
-        }
-        uint8_t *buf = m_new(uint8_t, total_len);
-        uint8_t *p = buf;
-        for (size_t i = 0; i < num; ++i) {
-            memcpy(p, data[i], data_len[i]);
-            p += data_len[i];
-        }
-        combined_data = buf;
-    } else {
-        // Single buffer, use directly.
-        combined_data = *data;
-        total_len = *data_len;
-    }
-
     mp_int_t args[] = {conn_handle, value_handle};
-    invoke_irq_handler(event, args, 2, 0, NULL_ADDR, NULL_UUID, &combined_data, &total_len, 1);
-
-    if (num > 1) {
-        m_del(uint8_t, (uint8_t *)combined_data, total_len);
-    }
+    invoke_irq_handler(event, args, 2, 0, NULL_ADDR, NULL_UUID, data, data_len, num);
 }
 
 void mp_bluetooth_gattc_on_read_write_status(uint8_t event, uint16_t conn_handle, uint16_t value_handle, uint16_t status) {
@@ -1553,7 +1580,7 @@ void mp_bluetooth_gap_on_scan_complete(void) {
     schedule_ringbuf(atomic_state);
 }
 
-void mp_bluetooth_gap_on_scan_result(uint8_t addr_type, const uint8_t *addr, uint8_t adv_type, const int8_t rssi, const uint8_t *data, size_t data_len) {
+void mp_bluetooth_gap_on_scan_result(uint8_t addr_type, const uint8_t *addr, uint8_t adv_type, const int8_t rssi, const uint8_t *data, uint16_t data_len) {
     MICROPY_PY_BLUETOOTH_ENTER
     mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
     data_len = MIN(o->irq_data_data_alloc, data_len);
@@ -1692,7 +1719,7 @@ mp_bluetooth_gatts_db_entry_t *mp_bluetooth_gatts_db_lookup(mp_gatts_db_t db, ui
     return MP_OBJ_TO_PTR(elem->value);
 }
 
-int mp_bluetooth_gatts_db_read(mp_gatts_db_t db, uint16_t handle, uint8_t **value, size_t *value_len) {
+int mp_bluetooth_gatts_db_read(mp_gatts_db_t db, uint16_t handle, const uint8_t **value, size_t *value_len) {
     MICROPY_PY_BLUETOOTH_ENTER
     mp_bluetooth_gatts_db_entry_t *entry = mp_bluetooth_gatts_db_lookup(db, handle);
     if (entry) {

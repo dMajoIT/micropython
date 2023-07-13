@@ -1,16 +1,15 @@
 freeze("$(PORT_DIR)/modules")
-module("upip.py", base_path="$(MPY_DIR)/tools", opt=3)
-module("upip_utarfile.py", base_path="$(MPY_DIR)/tools", opt=3)
-include("$(MPY_DIR)/extmod/uasyncio")
+include("$(MPY_DIR)/extmod/asyncio")
+
+# Useful networking-related packages.
+require("bundle-networking")
 
 # Require some micropython-lib modules.
+# require("aioespnow")
 require("dht")
 require("ds18x20")
 require("neopixel")
-require("ntptime")
 require("onewire")
 require("umqtt.robust")
 require("umqtt.simple")
 require("upysh")
-require("urequests")
-require("webrepl")

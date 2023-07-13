@@ -2,13 +2,26 @@
 #
 # This is a simple wrapper around cmake
 
+# Select the board to build for:
+ifdef BOARD_DIR
+# Custom board path - remove trailing slash and get the final component of
+# the path as the board name.
+BOARD ?= $(notdir $(BOARD_DIR:/=))
+else
+# If not given on the command line, then default to PICO.
 BOARD ?= PICO
+BOARD_DIR ?= boards/$(BOARD)
+endif
+
+ifeq ($(wildcard $(BOARD_DIR)/.),)
+$(error Invalid BOARD specified: $(BOARD_DIR))
+endif
  
 BUILD ?= build-$(BOARD)
 
 $(VERBOSE)MAKESILENT = -s
 
-CMAKE_ARGS = -DMICROPY_BOARD=$(BOARD)
+CMAKE_ARGS = -DMICROPY_BOARD=$(BOARD) -DMICROPY_BOARD_DIR=$(abspath $(BOARD_DIR))
 
 ifdef USER_C_MODULES
 CMAKE_ARGS += -DUSER_C_MODULES=${USER_C_MODULES}
@@ -20,6 +33,10 @@ endif
 
 ifeq ($(DEBUG),1)
 CMAKE_ARGS += -DCMAKE_BUILD_TYPE=Debug
+endif
+
+ifdef BOARD_VARIANT
+CMAKE_ARGS += -DBOARD_VARIANT=${BOARD_VARIANT}
 endif
 
 HELP_BUILD_ERROR ?= "See \033[1;31mhttps://github.com/micropython/micropython/wiki/Build-Troubleshooting\033[0m"
@@ -38,3 +55,8 @@ submodules:
 	GIT_SUBMODULES=$$(cmake -B $(BUILD)/submodules -DECHO_SUBMODULES=1 ${CMAKE_ARGS} -S . 2>&1 | \
 	                  grep '^GIT_SUBMODULES=' | cut -d= -f2); \
 	$(MAKE) -f ../../py/mkrules.mk GIT_SUBMODULES="$${GIT_SUBMODULES}" submodules
+
+query-variants:
+	@BOARD_VARIANTS=$$(cmake -B $(BUILD)/variants -DECHO_BOARD_VARIANTS=1 ${CMAKE_ARGS} -S . 2>&1 | \
+	                  grep '^BOARD_VARIANTS=' | cut -d= -f2); \
+	echo "VARIANTS: $${BOARD_VARIANTS}"
